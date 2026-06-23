@@ -1,0 +1,119 @@
+#1.2 Еластичність ціни та глибина знижки:
+#Для кожної категорії проаналізувати, як глибина знижки (discount %) впливає на кількість проданих одиниць та маржу.   
+#Завдання: 
+#- Розрахувати коефіцієнт кореляції між discount % та quantity по категоріях 
+#- Визначити оптимальний діапазон знижки, що максимізує revenue без втрати margin   
+#Візуалізація: - Scatter plot (discount % vs quantity) з лінією регресії - Facet по категоріях 
+
+import sqlite3
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+DB_PATH = "online_store.db"
+
+conn = sqlite3.connect(DB_PATH)
+
+query = """
+SELECT 
+    c.name AS category,
+    oi.quantity,
+    oi.unit_price,
+    oi.discount AS discount_pct,
+    p.cost,
+    o.status
+FROM order_items oi
+JOIN orders o ON oi.order_id = o.order_id
+JOIN products p ON oi.product_id = p.product_id
+JOIN categories c ON p.category_id = c.category_id
+WHERE o.status = 'completed'
+"""
+
+df = pd.read_sql(query, conn)
+conn.close()
+
+# discount у базі записаний як 0.05, 0.10, 0.20, тому переводимо у %
+df["discount_percent"] = df["discount_pct"] * 100
+
+# Revenue з урахуванням знижки
+df["revenue"] = df["quantity"] * df["unit_price"] * (1 - df["discount_pct"])
+
+# Margin з урахуванням знижки
+df["margin"] = (
+    df["unit_price"] * (1 - df["discount_pct"]) - df["cost"]
+) * df["quantity"]
+
+
+# 1. Кореляція між discount % та quantity по категоріях
+correlation_by_category = (
+    df.groupby("category")[["discount_percent", "quantity"]]
+      .corr()
+      .iloc[0::2, -1]
+      .reset_index()
+)
+
+correlation_by_category = correlation_by_category[
+    ["category", "quantity"]
+].rename(columns={"quantity": "discount_quantity_corr"})
+
+print("\nCorrelation between discount % and quantity by category:")
+print(correlation_by_category)
+
+
+# 2. Оптимальний діапазон знижки
+bins = [0, 5, 10, 15, 20, 25]
+labels = ["0-5%", "5-10%", "10-15%", "15-20%", "20-25%"]
+
+df["discount_range"] = pd.cut(
+    df["discount_percent"],
+    bins=bins,
+    labels=labels,
+    include_lowest=True,
+    right=False
+)
+
+discount_analysis = (
+    df.groupby(["category", "discount_range"], observed=True)
+      .agg(
+          revenue=("revenue", "sum"),
+          margin=("margin", "sum"),
+          quantity=("quantity", "sum")
+      )
+      .reset_index()
+)
+
+discount_analysis["margin_rate"] = (
+    discount_analysis["margin"] / discount_analysis["revenue"]
+)
+
+# Обираємо діапазон, де revenue максимальний, але margin залишається позитивною
+optimal_discount = (
+    discount_analysis[discount_analysis["margin"] > 0]
+    .sort_values(["category", "revenue"], ascending=[True, False])
+    .groupby("category")
+    .head(1)
+)
+
+print("\nOptimal discount range by category:")
+print(optimal_discount)
+
+
+# 3. Scatter plot + regression line, facet by category
+sns.set_theme(style="whitegrid")
+
+g = sns.lmplot(
+    data=df,
+    x="discount_percent",
+    y="quantity",
+    col="category",
+    col_wrap=4,
+    height=3,
+    scatter_kws={"alpha": 0.3},
+    line_kws={"color": "red"}
+)
+
+g.set_axis_labels("Discount, %", "Quantity")
+g.set_titles("{col_name}")
+
+plt.tight_layout()
+plt.show()
