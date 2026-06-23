@@ -19,120 +19,105 @@ df = df_order_items.merge(df_orders, on='order_id', how='inner')
 df = df.merge(df_products[['product_id', 'product_name', 'category_id']], on='product_id', how='inner')
 
 df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
-df = df.dropna(subset=['order_date'])
+df['year'] = df['order_date'].dt.year
 df['revenue'] = pd.to_numeric(df['unit_price']) * pd.to_numeric(df['quantity'])
 
-df_daily = df.groupby('order_date')['revenue'].sum().reset_index()
-df_daily = df_daily.set_index('order_date').asfreq('D', fill_value=0)
+df_filtered = df[df['year'].isin([2024, 2025])]
 
-df_daily['trend'] = df_daily['revenue'].rolling(window=7, center=True, min_periods=1).mean()
+product_yearly = df_filtered.groupby(['product_id', 'product_name', 'category_id', 'year'])['revenue'].sum().unstack(fill_value=0)
 
-df_daily['detrended'] = df_daily['revenue'] - df_daily['trend']
+if 2024 not in product_yearly.columns:
+    product_yearly[2024] = 0.0
+if 2025 not in product_yearly.columns:
+    product_yearly[2025] = 0.0
 
-df_daily['weekday'] = df_daily.index.day_name()
+product_yearly.columns = ['rev_2024', 'rev_2025']
+product_yearly = product_yearly.reset_index()
 
-weekday_seasonality = df_daily.groupby('weekday')['detrended'].mean()
-df_daily = df_daily.merge(weekday_seasonality.rename('seasonal'), left_on='weekday', right_index=True, how='left')
-
-df_daily['residual'] = df_daily['revenue'] - df_daily['trend'] - df_daily['seasonal']
-
-std_resid = df_daily['residual'].std()
-mean_resid = df_daily['residual'].mean()
-df_daily['is_anomaly'] = (df_daily['residual'] > mean_resid + 3 * std_resid) | (df_daily['residual'] < mean_resid - 3 * std_resid)
-anomalies = df_daily[df_daily['is_anomaly']]
-
-df_daily['year'] = df_daily.index.year
-df_daily['month'] = df_daily.index.month_name()
-
-months_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-
-df_sports = df[df['category_id'].astype(str).str.contains('sports|10|4', case=False, na=False)]
-df_electronics = df[df['category_id'].astype(str).str.contains('electronics|electron|1|5', case=False, na=False)]
-
-sports_monthly = df_sports.groupby(df_sports['order_date'].dt.month_name())['revenue'].sum().reindex(months_order).fillna(0)
-electronics_monthly = df_electronics.groupby(df_electronics['order_date'].dt.month_name())['revenue'].sum().reindex(months_order).fillna(0)
-
-weekday_avg = df_daily.groupby('weekday')['revenue'].mean().reindex(
-    ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-)
-print("\n Средняя выручка по дням недели:")
-print(weekday_avg.to_string())
-
-print("\n Выявленные аномальные дни (Топ-5 отклонений):")
-if not anomalies.empty:
-    print(anomalies[['revenue', 'residual']].sort_values(by='residual', ascending=False).head(5).to_string())
-else:
-    print("Явных изолированных аномалий не обнаружено.")
-
-fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
-
-axes[0].plot(df_daily.index, df_daily['revenue'], color='#1f77b4', alpha=0.6, label='Фактическая выручка ($)')
-axes[0].set_title('Разложение временного ряда выручки (Time Series Decomposition)', fontsize=14, pad=10)
-axes[0].legend(loc='upper left')
-axes[0].grid(True, linestyle=':', alpha=0.5)
-
-axes[1].plot(df_daily.index, df_daily['trend'], color='#d62728', linewidth=2, label='Годовой тренд (Trend)')
-axes[1].legend(loc='upper left')
-axes[1].grid(True, linestyle=':', alpha=0.5)
-
-axes[2].plot(df_daily.index, df_daily['seasonal'], color='#2ca02c', label='Недельная сезонность (Seasonal)')
-axes[2].legend(loc='upper left')
-axes[2].grid(True, linestyle=':', alpha=0.5)
-
-axes[3].scatter(df_daily.index, df_daily['residual'], color='#9467bd', alpha=0.5, s=12, label='Остатки (Residual / Шум)')
-if not anomalies.empty:
-    axes[3].scatter(anomalies.index, anomalies['residual'], color='red', s=35, edgecolor='black', label='Выявленные аномалии (Пики)')
-axes[3].legend(loc='upper left')
-axes[3].grid(True, linestyle=':', alpha=0.5)
-axes[3].set_xlabel('Дата заказа')
-
-plt.tight_layout()
-plt.savefig('revenue_decomposition_linear.png', dpi=300)
-plt.close()
-
-latest_year = int(df_daily['year'].max())
-df_year = df_daily[df_daily['year'] == latest_year].copy()
-
-df_year['week_of_year'] = df_year.index.isocalendar().week
-df_year['day_of_week_num'] = df_year.index.dayofweek
-
-cal_pivot = df_year.pivot_table(index='day_of_week_num', columns='week_of_year', values='revenue', aggfunc='sum').fillna(0)
-
-plt.figure(figsize=(15, 4))
-days_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-sns.heatmap(
-    cal_pivot,
-    cmap='YlOrRd',
-    linewidths=0.5,
-    linecolor='white',
-    cbar_kws={'label': 'Дневная выручка ($)', 'orientation': 'horizontal', 'pad': 0.2}
+product_yearly['growth_rate'] = np.where(
+    product_yearly['rev_2024'] > 0,
+    (product_yearly['rev_2025'] - product_yearly['rev_2024']) / product_yearly['rev_2024'],
+    0
 )
 
-plt.title(f'Календарный Heatmap выручки за {latest_year} год (Дни недели × Недели года)', fontsize=14, pad=15)
-plt.ylabel('День недели')
-plt.xlabel('Порядковый номер недели в году')
-plt.yticks(np.arange(7) + 0.5, days_labels, rotation=0)
+category_totals = product_yearly.groupby('category_id')['rev_2025'].sum().reset_index(name='cat_total_rev_2025')
+product_yearly = product_yearly.merge(category_totals, on='category_id', how='left')
+
+product_yearly['market_share'] = product_yearly['rev_2025'] / product_yearly['cat_total_rev_2025']
+product_yearly['market_share'] = product_yearly['market_share'].fillna(0)
+
+growth_threshold = product_yearly['growth_rate'].median()
+share_threshold = product_yearly['market_share'].median()
+
+def classify_bcg(row):
+    if row['growth_rate'] >= growth_threshold and row['market_share'] >= share_threshold:
+        return 'Звезды'
+    elif row['growth_rate'] < growth_threshold and row['market_share'] >= share_threshold:
+        return 'Дойные коровы'
+    elif row['growth_rate'] >= growth_threshold and row['market_share'] < share_threshold:
+        return 'Знаки вопроса'
+    else:
+        return 'Собаки'
+
+product_yearly['quadrant'] = product_yearly.apply(classify_bcg, axis=1)
+
+print("\n Товары, требующие инвестиций (Топ-5 по выручке):")
+investment_needed = product_yearly[product_yearly['quadrant'].isin(['Звезды', 'Знаки вопроса'])].sort_values(by='rev_2025', ascending=False)
+print(investment_needed[['product_name', 'quadrant', 'rev_2025', 'growth_rate']].head(5).to_string(index=False))
+
+print("\n Рекомендуются к выводу из ассортимента (Топ-5 кандидатов):")
+to_remove = product_yearly[product_yearly['quadrant'] == 'Собаки'].sort_values(by='growth_rate', ascending=True)
+print(to_remove[['product_name', 'rev_2025', 'growth_rate', 'market_share']].head(5).to_string(index=False))
+
+plt.figure(figsize=(12, 8))
+
+colors = {'Звезды': '#2ca02c', 'Дойные коровы': '#1f77b4', 'Знаки вопроса': '#ff7f0e', 'Собаки': '#d62728'}
+
+max_rev = product_yearly['rev_2025'].max()
+bubble_sizes = (product_yearly['rev_2025'] / max_rev * 1500 + 100) if max_rev > 0 else 200
+
+scatter = sns.scatterplot(
+    data=product_yearly,
+    x='market_share',
+    y='growth_rate',
+    hue='quadrant',
+    size=bubble_sizes,
+    palette=colors,
+    sizes=(100, 1600),
+    alpha=0.6,
+    legend=False
+)
+
+plt.axvline(x=share_threshold, color='black', linestyle='--', alpha=0.4)
+plt.axhline(y=growth_threshold, color='black', linestyle='--', alpha=0.4)
+
+xmin, xmax = plt.xlim()
+ymin, ymax = plt.ylim()
+
+plt.text(share_threshold + (xmax-share_threshold)*0.3, growth_threshold + (ymax-growth_threshold)*0.5, 'ЗВЕЗДЫ', fontsize=16, fontweight='bold', color='green', alpha=0.2)
+plt.text(share_threshold + (xmax-share_threshold)*0.3, growth_threshold - (growth_threshold-ymin)*0.5, 'ДОЙНЫЕ КОРОВЫ', fontsize=16, fontweight='bold', color='blue', alpha=0.2)
+plt.text(share_threshold - (share_threshold-xmin)*0.7, growth_threshold + (ymax-growth_threshold)*0.5, 'ЗНАКИ ВОПРОСА', fontsize=16, fontweight='bold', color='orange', alpha=0.2)
+plt.text(share_threshold - (share_threshold-xmin)*0.7, growth_threshold - (growth_threshold-ymin)*0.5, 'СОБАКИ', fontsize=16, fontweight='bold', color='red', alpha=0.2)
+
+top_labelled = product_yearly.groupby('quadrant').apply(lambda x: x.nlargest(2, 'rev_2025')).reset_index(drop=True)
+for i, row in top_labelled.iterrows():
+    plt.text(
+        row['market_share'],
+        row['growth_rate'] + (ymax-ymin)*0.02,
+        row['product_name'],
+        fontsize=9,
+        fontweight='bold',
+        ha='center',
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
+    )
+
+plt.title('BCG Матрица: Классификация товаров на квадранты (2024 → 2025)', fontsize=14, pad=15)
+plt.xlabel('Доля рынка в категории (Market Share)', fontsize=12)
+plt.ylabel('Темп роста выручки (Growth Rate)', fontsize=12)
+plt.grid(True, linestyle=':', alpha=0.6)
 plt.tight_layout()
 
-plt.savefig('revenue_calendar_heatmap.png', dpi=300)
-plt.close()
-
-plt.figure(figsize=(10, 5))
-x_indexes = np.arange(len(months_order))
-width = 0.35
-
-plt.bar(x_indexes - width/2, sports_monthly, width, label='Sports', color='orange', alpha=0.8)
-plt.bar(x_indexes + width/2, electronics_monthly, width, label='Electronics', color='teal', alpha=0.8)
-
-plt.title('Проверка сезонности категорий товаров (Продажи по месяцам)')
-plt.xticks(x_indexes, [m[:3] for m in months_order])
-plt.xlabel('Месяц')
-plt.ylabel('Выручка ($)')
-plt.legend()
-plt.grid(axis='y', linestyle=':', alpha=0.5)
-plt.tight_layout()
-plt.savefig('category_seasonality_comparison.png', dpi=300)
+plt.savefig('bcg_matrix_quadrants.png', dpi=300)
 plt.close()
 
 conn.close()
