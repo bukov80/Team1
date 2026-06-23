@@ -4,120 +4,102 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+pd.set_option('display.float_format', lambda x: '%.2f' % x)
+
 conn = sqlite3.connect('online_store.db')
 
 df_orders = pd.read_sql_query("SELECT * FROM orders", conn)
 df_order_items = pd.read_sql_query("SELECT * FROM order_items", conn)
+df_customers = pd.read_sql_query("SELECT * FROM customers", conn)
 df_products = pd.read_sql_query("SELECT * FROM products", conn)
 
 if 'name' in df_products.columns:
     df_products = df_products.rename(columns={'name': 'product_name'})
-elif 'product_name' not in df_products.columns:
-    df_products['product_name'] = 'Product ' + df_products['product_id'].astype(str)
 
-df = df_order_items.merge(df_orders, on='order_id', how='inner')
-df = df.merge(df_products[['product_id', 'product_name', 'category_id']], on='product_id', how='inner')
+df_order_items['unit_price'] = pd.to_numeric(df_order_items['unit_price']).fillna(0)
+df_order_items['quantity'] = pd.to_numeric(df_order_items['quantity']).fillna(0)
+df_order_items['discount'] = pd.to_numeric(df_order_items['discount']).fillna(0)
 
-df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
-df['year'] = df['order_date'].dt.year
-df['revenue'] = pd.to_numeric(df['unit_price']) * pd.to_numeric(df['quantity'])
+df_order_items['item_total'] = df_order_items['unit_price'] * df_order_items['quantity'] * (1 - df_order_items['discount'])
 
-df_filtered = df[df['year'].isin([2024, 2025])]
+df_order_values = df_order_items.groupby('order_id')['item_total'].sum().reset_index(name='order_value')
 
-product_yearly = df_filtered.groupby(['product_id', 'product_name', 'category_id', 'year'])['revenue'].sum().unstack(fill_value=0)
+df_orders_enriched = df_orders.merge(df_order_values, on='order_id', how='inner')
+df_orders_enriched = df_orders_enriched.merge(df_customers, on='customer_id', how='inner')
 
-if 2024 not in product_yearly.columns:
-    product_yearly[2024] = 0.0
-if 2025 not in product_yearly.columns:
-    product_yearly[2025] = 0.0
+df_orders_enriched['full_name'] = df_orders_enriched['first_name'] + ' ' + df_orders_enriched['last_name']
 
-product_yearly.columns = ['rev_2024', 'rev_2025']
-product_yearly = product_yearly.reset_index()
+values = df_orders_enriched['order_value']
 
-product_yearly['growth_rate'] = np.where(
-    product_yearly['rev_2024'] > 0,
-    (product_yearly['rev_2025'] - product_yearly['rev_2024']) / product_yearly['rev_2024'],
-    0
-)
+q1 = values.quantile(0.25)
+q3 = values.quantile(0.75)
+iqr = q3 - q1
+upper_bound_iqr = q3 + 1.5 * iqr
+outliers_iqr = df_orders_enriched[values > upper_bound_iqr]
 
-category_totals = product_yearly.groupby('category_id')['rev_2025'].sum().reset_index(name='cat_total_rev_2025')
-product_yearly = product_yearly.merge(category_totals, on='category_id', how='left')
+mean_val = values.mean()
+std_val = values.std()
+df_orders_enriched['z_score'] = np.abs((values - mean_val) / std_val)
+outliers_z = df_orders_enriched[df_orders_enriched['z_score'] > 3]
 
-product_yearly['market_share'] = product_yearly['rev_2025'] / product_yearly['cat_total_rev_2025']
-product_yearly['market_share'] = product_yearly['market_share'].fillna(0)
+print("=== СТАТИСТИЧЕСКИЙ АНАЛИЗ И ВЫЯВЛЕНИЕ ВЫБРОСОВ ===")
+print(f"Всего заказов в базе: {len(df_orders_enriched)}")
+print(f"Выбросов по методу IQR (чеки > {upper_bound_iqr:.2f}$): {len(outliers_iqr)}")
+print(f"Выбросов по методу Z-score (сильные аномалии): {len(outliers_z)}")
 
-growth_threshold = product_yearly['growth_rate'].median()
-share_threshold = product_yearly['market_share'].median()
+top_1_percent_threshold = values.quantile(0.99)
+df_top_1 = df_orders_enriched[values >= top_1_percent_threshold]
 
-def classify_bcg(row):
-    if row['growth_rate'] >= growth_threshold and row['market_share'] >= share_threshold:
-        return 'Звезды'
-    elif row['growth_rate'] < growth_threshold and row['market_share'] >= share_threshold:
-        return 'Дойные коровы'
-    elif row['growth_rate'] >= growth_threshold and row['market_share'] < share_threshold:
-        return 'Знаки вопроса'
-    else:
-        return 'Собаки'
+df_top_1_items = df_order_items[df_order_items['order_id'].isin(df_top_1['order_id'])].merge(df_products, on='product_id', how='inner')
+top_categories = df_top_1_items.groupby('category_id')['item_total'].sum().sort_values(ascending=False).reset_index()
 
-product_yearly['quadrant'] = product_yearly.apply(classify_bcg, axis=1)
+print(f"\n ПРОФАЙЛ ТОП-1% НАИБОЛЬШИХ ЗАКАЗОВ (Чеки >= {top_1_percent_threshold:.2f}$):")
+print(f"• Top стран доставки:\n{df_top_1['ship_country'].value_counts().head(3).to_string()}")
+print(f"• Топ сегментов клиентов:\n{df_top_1['segment'].value_counts().head(3).to_string()}")
+print(f"• Топ категорий товара по выручке в крупных чеках:\n{top_categories.head(3).to_string(index=False, float_format='%.2f')}")
 
-print("\n Товары, требующие инвестиций (Топ-5 по выручке):")
-investment_needed = product_yearly[product_yearly['quadrant'].isin(['Звезды', 'Знаки вопроса'])].sort_values(by='rev_2025', ascending=False)
-print(investment_needed[['product_name', 'quadrant', 'rev_2025', 'growth_rate']].head(5).to_string(index=False))
+df_micro = df_orders_enriched[values < values.quantile(0.01)]
+print("\n АНАЛИЗ МИКРОЗАКАЗОВ (Топ-1% снизу):")
+print(f"• Минимальный чек в магазине: {values.min():.2f}$")
+print(f"• Средний чек micro-заказов: {df_micro['order_value'].mean():.2f}$")
 
-print("\n Рекомендуются к выводу из ассортимента (Топ-5 кандидатов):")
-to_remove = product_yearly[product_yearly['quadrant'] == 'Собаки'].sort_values(by='growth_rate', ascending=True)
-print(to_remove[['product_name', 'rev_2025', 'growth_rate', 'market_share']].head(5).to_string(index=False))
+customer_order_counts = df_orders_enriched.groupby('customer_id').size().reset_index(name='total_customer_orders')
+df_top_1_with_counts = df_top_1.merge(customer_order_counts, on='customer_id', how='inner')
+one_time_giant_buyers = df_top_1_with_counts[df_top_1_with_counts['total_customer_orders'] == 1]
 
-plt.figure(figsize=(12, 8))
+print("\n КЛИЕНТЫ С ОДНИМ ГИГАНТСКИМ ЗАКАЗОМ (И исчезли):")
+print(f"• Количество таких клиентов: {len(one_time_giant_buyers)}")
+if not one_time_giant_buyers.empty:
+    print(one_time_giant_buyers[['customer_id', 'full_name', 'order_value', 'ship_country']].head(5).to_string(index=False, float_format='%.2f'))
 
-colors = {'Звезды': '#2ca02c', 'Дойные коровы': '#1f77b4', 'Знаки вопроса': '#ff7f0e', 'Собаки': '#d62728'}
+plt.figure(figsize=(10, 6))
+sns.histplot(values[values <= top_1_percent_threshold], bins=40, kde=True, color='#1f77b4', alpha=0.7)
 
-max_rev = product_yearly['rev_2025'].max()
-bubble_sizes = (product_yearly['rev_2025'] / max_rev * 1500 + 100) if max_rev > 0 else 200
+plt.axvline(q1, color='orange', linestyle='--', linewidth=2, label=f'Q1 (25%): {q1:.1f}$')
+plt.axvline(values.median(), color='red', linestyle='-', linewidth=2, label=f'Median (50%): {values.median():.1f}$')
+plt.axvline(q3, color='green', linestyle='--', linewidth=2, label=f'Q3 (75%): {q3:.1f}$')
+plt.axvline(upper_bound_iqr, color='purple', linestyle=':', linewidth=2, label=f'Граница IQR: {upper_bound_iqr:.1f}$')
 
-scatter = sns.scatterplot(
-    data=product_yearly,
-    x='market_share',
-    y='growth_rate',
-    hue='quadrant',
-    size=bubble_sizes,
-    palette=colors,
-    sizes=(100, 1600),
-    alpha=0.6,
-    legend=False
-)
-
-plt.axvline(x=share_threshold, color='black', linestyle='--', alpha=0.4)
-plt.axhline(y=growth_threshold, color='black', linestyle='--', alpha=0.4)
-
-xmin, xmax = plt.xlim()
-ymin, ymax = plt.ylim()
-
-plt.text(share_threshold + (xmax-share_threshold)*0.3, growth_threshold + (ymax-growth_threshold)*0.5, 'ЗВЕЗДЫ', fontsize=16, fontweight='bold', color='green', alpha=0.2)
-plt.text(share_threshold + (xmax-share_threshold)*0.3, growth_threshold - (growth_threshold-ymin)*0.5, 'ДОЙНЫЕ КОРОВЫ', fontsize=16, fontweight='bold', color='blue', alpha=0.2)
-plt.text(share_threshold - (share_threshold-xmin)*0.7, growth_threshold + (ymax-growth_threshold)*0.5, 'ЗНАКИ ВОПРОСА', fontsize=16, fontweight='bold', color='orange', alpha=0.2)
-plt.text(share_threshold - (share_threshold-xmin)*0.7, growth_threshold - (growth_threshold-ymin)*0.5, 'СОБАКИ', fontsize=16, fontweight='bold', color='red', alpha=0.2)
-
-top_labelled = product_yearly.groupby('quadrant').apply(lambda x: x.nlargest(2, 'rev_2025')).reset_index(drop=True)
-for i, row in top_labelled.iterrows():
-    plt.text(
-        row['market_share'],
-        row['growth_rate'] + (ymax-ymin)*0.02,
-        row['product_name'],
-        fontsize=9,
-        fontweight='bold',
-        ha='center',
-        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
-    )
-
-plt.title('BCG Матрица: Классификация товаров на квадранты (2024 → 2025)', fontsize=14, pad=15)
-plt.xlabel('Доля рынка в категории (Market Share)', fontsize=12)
-plt.ylabel('Темп роста выручки (Growth Rate)', fontsize=12)
+plt.title('Распределение стоимости заказов (Гистограмма с квартилями)', fontsize=14, pad=15)
+plt.xlabel('Стоимость заказа ($)', fontsize=12)
+plt.ylabel('Количество заказов', fontsize=12)
+plt.legend(fontsize=10)
 plt.grid(True, linestyle=':', alpha=0.6)
 plt.tight_layout()
+plt.savefig('orders_distribution_histogram.png', dpi=300)
+plt.close()
 
-plt.savefig('bcg_matrix_quadrants.png', dpi=300)
+plt.figure(figsize=(12, 6))
+sns.boxplot(data=df_orders_enriched, x='segment', y='order_value', palette='Set2', hue='segment', legend=False)
+
+plt.title('Диаграмма "Ящик с усами" (Box Plot) по сегментам покупателей', fontsize=14, pad=15)
+plt.xlabel('Сегмент клиента', fontsize=12)
+plt.ylabel('Стоимость заказа ($)', fontsize=12)
+plt.grid(True, linestyle=':', alpha=0.5)
+
+plt.ylim(0, upper_bound_iqr * 2.5)
+plt.tight_layout()
+plt.savefig('orders_value_boxplot.png', dpi=300)
 plt.close()
 
 conn.close()
