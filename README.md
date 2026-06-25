@@ -65,9 +65,7 @@
 3. Встановіть залежності:
 
 ```bash
-pip install -r requirements.txt
-або вручну:
-Bashpip install pandas numpy matplotlib seaborn networkx
+pip install pandas numpy matplotlib seaborn networkx
 
 Запустіть основний скрипт:
 
