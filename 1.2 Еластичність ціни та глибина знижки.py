@@ -1,9 +1,9 @@
 #1.2 Еластичність ціни та глибина знижки:
-#Для кожної категорії проаналізувати, як глибина знижки (discount %) впливає на кількість проданих одиниць та маржу.   
-#Завдання: 
-#- Розрахувати коефіцієнт кореляції між discount % та quantity по категоріях 
-#- Визначити оптимальний діапазон знижки, що максимізує revenue без втрати margin   
-#Візуалізація: - Scatter plot (discount % vs quantity) з лінією регресії - Facet по категоріях 
+#Для кожної категорії проаналізувати, як глибина знижки (discount %) впливає на кількість проданих одиниць та маржу.
+#Завдання:
+#- Розрахувати коефіцієнт кореляції між discount % та quantity по категоріях
+#- Визначити оптимальний діапазон знижки, що максимізує revenue без втрати margin
+#Візуалізація: - Scatter plot (discount % vs quantity) з лінією регресії - Facet по категоріях
 
 
 import sqlite3
@@ -206,9 +206,7 @@ plt.axhline(
 plt.title("Margin rate по діапазонах знижок")
 plt.xlabel("Discount range")
 plt.ylabel("Margin rate")
-plt.x
-
-ticks(rotation=45)
+plt.xticks(rotation=45)
 plt.legend()
 plt.tight_layout()
 plt.show()
