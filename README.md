@@ -1,8 +1,10 @@
 # 📊 Data Analytics E-Commerce Project | Team 1
 
+[![Project Type](https://img.shields.io/badge/Project-Educational_Material-orange?logo=readme&logoColor=white)](#)
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Database](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Framework](https://img.shields.io/badge/Data_Stack-Pandas%20%7C%20NumPy%20%7C%20Seaborn-150458?logo=pandas&logoColor=white)](https://pandas.pydata.org/)
+
 
 Комплексний аналіз операційних, фінансових та маркетингових показників інтернет-магазину на основі даних СУБД SQLite. Проєкт створено як навчальний матеріал, що поєднує фінансовий аудит, дослідження асортименту (BCG), поведінкових патернів клієнтів (MBA), HR-метрики та антифрод-моніторинг.
 
